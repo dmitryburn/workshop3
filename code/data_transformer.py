@@ -6,7 +6,7 @@ import datetime
 from sklearn.base import BaseEstimator, TransformerMixin
 
 class BaseDataTransformer(BaseEstimator, TransformerMixin):
-    def __init__(self, threshold_brands=10, threshold_cylindersin=86, threshold_models=100, num_new_features=15):
+    def __init__(self, threshold_brands=10, threshold_cylindersin=86, threshold_models=100, num_new_features=15,another_new_features=False):
         self.num_new_features = num_new_features
         self.threshold_brands = threshold_brands
         self.threshold_cylindersin = threshold_cylindersin
@@ -25,10 +25,14 @@ class BaseDataTransformer(BaseEstimator, TransformerMixin):
         self.median_kilometers = None
         self.literes_median = {'Electric': None, 'Hybrid': None, 'Other': None}
         self.consumption_literes_median = {'Electric': None, 'Hybrid': None, 'Other': None}
+        self.price_per_cylinder_dict = {}
         self.new_features_list = []
+        self.max_year = None
+        self.another_new_features = another_new_features
 
 
     def fit(self, X, y=None):
+        self.max_year = X.Year.max()
         self.moda_bodytype = X.BodyType.mode()[0]
         self.moda_doors = X.Doors.mode()[0]
         self.moda_seats = X.Seats.mode()[0]
@@ -76,8 +80,49 @@ class BaseDataTransformer(BaseEstimator, TransformerMixin):
         X_transformed.Seats = self.transform_Seats(X_transformed)
         
         X_transformed = self.add_new_features(X_transformed)
+         
+        if self.another_new_features:
+            X_transformed['ColorLocation'] = X_transformed['ColourExtInt'] + '_' + X_transformed['Location']
+            X_transformed['FuelAndTransmission'] = X_transformed['FuelType'] + '_' + X_transformed['Transmission']
+            X_transformed['DriveBody'] = X_transformed['DriveType'] + '_' + X_transformed['BodyType']
+            X_transformed['HightQualityPower'] = ((X_transformed['Engine'] > 3.0) & (X_transformed['Transmission'] == 'Automatic')).astype(int).astype(str)
+            X_transformed['LastModel'] = (X_transformed['Year'] == self.max_year).astype(int).astype(str)
+            X_transformed['TrendFuelConsumption'] = X_transformed.groupby(['Brand', 'Model'])['FuelConsumption'].transform(lambda x: x.diff().mean())
 
         return X_transformed.drop(['Car/Suv','Title'], axis=1)
+    
+    def fit_price_per_cylinder(self,X):
+        X_transformed = X.copy()
+        def convert_cylinders(cyl):
+            if '-' in cyl or 'L' in cyl:
+                return float(4)
+            return float(cyl.replace(' cyl', ''))
+        
+        X_transformed['Cylinders'] = X_transformed['CylindersinEngine'].apply(convert_cylinders) 
+        average_price_per_cylinders = X_transformed.groupby('Cylinders')['Price'].mean()
+
+        self.overall_average_price_cyl = X_transformed['Price'].mean()
+
+        self.price_per_cylinder_dict = average_price_per_cylinders.to_dict()
+        
+
+    def transform_price_per_cylinder(self,X):
+        X_transformed = X.copy()
+
+        def convert_cylinders(cyl):
+            if '-' in cyl or 'L' in cyl:
+                return float(4)
+            return float(cyl.replace(' cyl', ''))
+        
+        X_transformed['Cylinders'] = X_transformed['CylindersinEngine'].apply(convert_cylinders) 
+
+        def get_average_price(cylinders):
+            return  self.price_per_cylinder_dict.get(cylinders, self.overall_average_price_cyl)
+        X_transformed['AveragePrice'] = X_transformed['Cylinders'].apply(get_average_price)  
+
+        return  X_transformed.AveragePrice
+
+
 
     def add_new_features(self,X):
         X_transformed = X.copy()
@@ -88,9 +133,8 @@ class BaseDataTransformer(BaseEstimator, TransformerMixin):
         X_transformed['AvgKilometresPerYear'] = X_transformed['Kilometres'] / car_age
 
         def convert_cylinders(cyl):
-            #if cyl in ['-', '0 L']:
             if '-' in cyl or 'L' in cyl:
-                return 4
+                return float(4)
             return float(cyl.replace(' cyl', ''))
 
         cylsin = X_transformed['CylindersinEngine'].apply(convert_cylinders)
@@ -205,7 +249,7 @@ class BaseDataTransformer(BaseEstimator, TransformerMixin):
     def transform_new_features(self, X):
         X_transformed = X.copy()
         for value in self.new_features_list:
-            X_transformed[value] = X_transformed.Title.apply(lambda x: 1 if value in x else 0)
+            X_transformed[value] = X_transformed.Title.apply(lambda x: '1' if value in x else '0')
         return X_transformed
 
     def fit_new_features(self,X):
